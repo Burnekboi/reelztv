@@ -11,21 +11,22 @@
 // AniList/Kitsu-backed titles (ids are AniList ids).
 // ---------------------------------------------------------------------------
 
-import { API_MIRRORS, EMBED_ORIGIN, VIDSRC_HOST } from './codes';
+import { API_MIRRORS, EMBED_ORIGIN, VIDSRC_HOST } from './codes.js';
 import {
   tvmazeLibrary,
   tvmazeSearch,
   tvmazeDetails,
   tvmazeSeason,
   tvmazeRail,
-} from './tvmazeApi';
+} from './tvmazeApi.js';
 import {
   tmdbLibrary,
   tmdbSearch,
   tmdbDetails,
   tmdbRail,
   hasTmdbKey,
-} from './tmdbApi';
+} from './tmdbApi.js';
+import { kitsuDiscover, kitsuSearch, kitsuMedia } from './kitsuApi.js';
 
 // Internal hosts, extractor ids and embed event names live encoded in
 // ./codes.js so third-party names never appear as text in the built bundle.
@@ -77,6 +78,9 @@ export function normalizeMedia(raw) {
     poster: raw.poster || raw.image || null,
     backdrop: raw.backdrop || raw.image || null,
     description: raw.overview || raw.synopsis || raw.description || '',
+    // Anime playback picks its embed type from the format (movie vs series);
+    // without it every anime film would be addressed as a series.
+    format: raw.format ? String(raw.format).toUpperCase() : null,
     genres: Array.isArray(raw.genres)
       ? raw.genres.map((g) => (typeof g === 'string' ? g : g?.name)).filter(Boolean)
       : [],
@@ -101,9 +105,10 @@ function unwrapList(data) {
 // GET /api/home — hero pick + prebuilt discovery rails.
 //
 // If the mirrors are unreachable (they withhold CORS from our domain), the
-// rails are rebuilt from open sources: TV from TVMaze (keyless) and movies from
-// TMDB (free key). Anything still unavailable is left empty so the page renders
-// its normal rails rather than an error panel.
+// rails are rebuilt from open sources: TV from TVMaze (keyless), movies from
+// TMDB (free key) and anime from AniList, with Kitsu covering any period where
+// AniList has disabled its API. Anything still unavailable is left empty so the
+// page renders its normal rails rather than an error panel.
 export async function fetchHome() {
   try {
     const data = await getJson('/api/home');
@@ -114,22 +119,32 @@ export async function fetchHome() {
     }
     return { hero: normalizeMedia(data.hero), rails };
   } catch (err) {
-    const [tv, trending, popular, fresh] = await Promise.all([
+    const animeRail = async (kind) => {
+      try {
+        const r = await anilistDiscover({ category: kind, page: 1 });
+        return r.items;
+      } catch {
+        return (await kitsuDiscover({ category: kind, page: 1 }).catch(() => ({ items: [] }))).items;
+      }
+    };
+    const [tv, trending, popular, fresh, animePopular, animeAiring] = await Promise.all([
       tvmazeRail('popular', 20).catch(() => []),
       hasTmdbKey() ? tmdbRail('trending', 20).catch(() => []) : [],
       hasTmdbKey() ? tmdbRail('popular', 20).catch(() => []) : [],
       hasTmdbKey() ? tmdbRail('new_releases', 20).catch(() => []) : [],
+      animeRail('popular'),
+      animeRail('trending'),
     ]);
-    if (tv.length === 0 && trending.length === 0) throw err;
+    if (tv.length === 0 && trending.length === 0 && animePopular.length === 0) throw err;
     return {
-      hero: trending[0] || tv[0] || null,
+      hero: trending[0] || tv[0] || animePopular[0] || null,
       rails: {
         trending_movies: trending,
         popular_movies: popular,
         popular_tv: tv,
-        popular_anime: [],
+        popular_anime: animePopular,
         new_releases: fresh,
-        airing_anime: [],
+        airing_anime: animeAiring,
       },
     };
   }
@@ -162,8 +177,10 @@ export async function fetchLibrary(library, { category = '', genre = '', year = 
 //
 // The mirrors serve these /anime routes but attach NO CORS header to them
 // (their movie routes do send `*`), so browsers block the response on any real
-// domain. When that happens we read the same catalog from AniList directly —
-// keyless, CORS-open, and the very source these routes proxy.
+// domain. The catalog is then read from AniList directly — keyless, CORS-open,
+// and the very source these routes proxy. AniList periodically disables its API
+// outright, so a second independent anime catalog (Kitsu) covers that case;
+// both address titles by AniList id, which is what playback embeds expect.
 export async function fetchAnimeDiscover({ category = 'popular', genre = '', seasonYear = '', page = 1 } = {}) {
   const params = new URLSearchParams({ page: String(page) });
   if (category) params.set('category', category);
@@ -172,15 +189,19 @@ export async function fetchAnimeDiscover({ category = 'popular', genre = '', sea
   try {
     return unwrapList(await getJson(`/api/discover?${params.toString()}`, { anime: true }));
   } catch {
-    return anilistDiscover({ category, genre, seasonYear, page });
+    try {
+      return await anilistDiscover({ category, genre, seasonYear, page });
+    } catch {
+      return kitsuDiscover({ category, genre, seasonYear, page });
+    }
   }
 }
 
 // GET /api/search — global search (type: movie | tv | anime | all).
 //
 // When the mirrors are unreachable, results are rebuilt from the open sources:
-// movies from TMDB (free key), TV from TVMaze (keyless). Anime stays covered by
-// the AniList path used by the Anime tab.
+// movies from TMDB (free key), TV from TVMaze (keyless), anime from AniList with
+// Kitsu standing in whenever AniList has disabled its API.
 export async function searchMedia(query, type = 'all', page = 1) {
   const q = String(query || '').trim();
   if (q.length < 2) return { items: [], page: 1, totalPages: 0, totalResults: 0 };
@@ -188,17 +209,21 @@ export async function searchMedia(query, type = 'all', page = 1) {
   try {
     return unwrapList(await getJson(`/api/search?${params.toString()}`));
   } catch (err) {
-    const [movies, tv] = await Promise.all([
+    const wantsAnime = type === 'anime' || type === 'all';
+    const [movies, tv, anime] = await Promise.all([
       hasTmdbKey() ? tmdbSearch(q, page).catch(() => null) : null,
       tvmazeSearch(q, page).catch(() => null),
+      wantsAnime
+        ? (await kitsuSearch(q, page).catch(() => null))
+        : null,
     ]);
-    const items = [...(movies?.items || []), ...(tv?.items || [])];
+    const items = [...(movies?.items || []), ...(tv?.items || []), ...(anime?.items || [])];
     if (items.length === 0) throw err;
     return {
       items,
       page,
-      totalPages: Math.max(movies?.totalPages || 1, tv?.totalPages || 1),
-      totalResults: (movies?.totalResults || 0) + (tv?.totalResults || 0),
+      totalPages: Math.max(movies?.totalPages || 1, tv?.totalPages || 1, anime?.totalPages || 1),
+      totalResults: (movies?.totalResults || 0) + (tv?.totalResults || 0) + (anime?.totalResults || 0),
     };
   }
 }
@@ -263,37 +288,42 @@ export async function fetchProviders() {
 }
 
 // AniList GraphQL — keyless, CORS-open. Used for anime episode counts and
-// the movie/series format of a title.
+// the movie/series format of a title. AniList disables its API from time to
+// time, so a second independent catalog answers when it does.
 export async function fetchAnilistMedia(anilistId) {
   const id = Number(anilistId);
   if (!Number.isFinite(id)) throw new Error('Invalid AniList id');
-  const res = await fetch('https://graphql.anilist.co', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({
-      query: `query ($id: Int) {
-        Media(id: $id, type: ANIME) {
-          id
-          format
-          episodes
-          duration
-          title { romaji english }
-        }
-      }`,
-      variables: { id },
-    }),
-  });
-  if (!res.ok) throw new Error(`AniList HTTP ${res.status}`);
-  const json = await res.json();
-  const media = json?.data?.Media;
-  if (!media) throw new Error('AniList title not found');
-  return {
-    id: media.id,
-    format: media.format || null,
-    episodes: media.episodes || null,
-    duration: media.duration || null,
-    title: media.title?.romaji || media.title?.english || null,
-  };
+  try {
+    const res = await fetch('https://graphql.anilist.co', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        query: `query ($id: Int) {
+          Media(id: $id, type: ANIME) {
+            id
+            format
+            episodes
+            duration
+            title { romaji english }
+          }
+        }`,
+        variables: { id },
+      }),
+    });
+    if (!res.ok) throw new Error(`AniList HTTP ${res.status}`);
+    const json = await res.json();
+    const media = json?.data?.Media;
+    if (!media) throw new Error('AniList title not found');
+    return {
+      id: media.id,
+      format: media.format || null,
+      episodes: media.episodes || null,
+      duration: media.duration || null,
+      title: media.title?.romaji || media.title?.english || null,
+    };
+  } catch {
+    return kitsuMedia(id);
+  }
 }
 
 // AniList browse — direct fallback for the anime catalog, returning the same
@@ -333,6 +363,7 @@ export async function anilistDiscover({ category = 'popular', genre = '', season
             bannerImage
             averageScore
             seasonYear
+            format
             description(asHtml: false)
             genres
             restricted: ${maturityField}
@@ -355,6 +386,7 @@ export async function anilistDiscover({ category = 'popular', genre = '', season
       title: m.title?.english || m.title?.romaji || 'Untitled',
       rating: m.averageScore != null ? m.averageScore / 10 : null,
       year: m.seasonYear || null,
+      format: m.format || null,
       poster: m.coverImage?.extraLarge || m.coverImage?.large || null,
       backdrop: m.bannerImage || null,
       description: m.description || '',
