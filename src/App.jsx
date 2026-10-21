@@ -74,9 +74,31 @@ function LogoLoader({ label = 'Loading…', className = '' }) {
   );
 }
 
+// Artwork sizing. The catalog hands back one wide backdrop per title (TMDB at
+// w1280, ~150-270 KB each), but grid cards paint it into a small 16:9 tile —
+// on a phone that is ~7x more image data than the slot can show, and it was
+// the single biggest cost on mobile. TMDB serves the same artwork at any width
+// from the same path, so cards advertise a srcset and let the browser pick.
+const TMDB_SIZE = /\/(t\/p)\/w\d+\//;
+// Card slots are 1/2/3/4 of the viewport across the grid's breakpoints, so the
+// hint tracks the real tile width. w300/w500 cover the 1-2 column layouts at 1x
+// and the 3-4 column layouts at 2x; the larger steps serve wide/desktop screens.
+const CARD_WIDTHS = [300, 500, 780, 1280];
+const CARD_SIZES = '(max-width: 639px) 96vw, (max-width: 1023px) 47vw, (max-width: 1279px) 31vw, 23vw';
+
+const resizeTmdb = (src, width) => {
+  if (!src || !TMDB_SIZE.test(src)) return null;
+  return src.replace(TMDB_SIZE, `/$1/w${width}/`);
+};
+
+function buildSrcSet(src, widths) {
+  const parts = widths.map((w) => [resizeTmdb(src, w), w]).filter(([u]) => !!u);
+  return parts.length > 1 ? parts.map(([u, w]) => `${u} ${w}w`).join(', ') : null;
+}
+
 // Poster/backdrop with a branded fallback: when a title has no artwork at all,
 // or the image URL 404s, the site icon is shown instead of an empty grey box.
-function MediaImage({ src, alt = '', className = '', fallbackIconClass = 'w-12 h-12' }) {
+function MediaImage({ src, alt = '', className = '', fallbackIconClass = 'w-12 h-12', widths = null, sizes = null }) {
   // Remember *which* src failed rather than a boolean, so a new media item
   // (new src) automatically clears the fallback without an effect.
   const [failedSrc, setFailedSrc] = useState(null);
@@ -99,6 +121,8 @@ function MediaImage({ src, alt = '', className = '', fallbackIconClass = 'w-12 h
   return (
     <img
       src={src}
+      srcSet={widths ? buildSrcSet(src, widths) || undefined : undefined}
+      sizes={widths ? sizes || undefined : undefined}
       alt={alt}
       loading="lazy"
       draggable="false"
@@ -250,6 +274,8 @@ function MediaCard({ media, onOpen, saved, onToggleSave }) {
         <MediaImage
           src={image}
           alt={media.title}
+          widths={CARD_WIDTHS}
+          sizes={CARD_SIZES}
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
           fallbackIconClass="w-12 h-12"
         />
@@ -1324,6 +1350,8 @@ export default function App() {
                         key={currentHero.id}
                         src={currentHero.backdrop || currentHero.poster}
                         alt={currentHero.title}
+                        widths={[780, 1280]}
+                        sizes="100vw"
                         className="w-full h-full object-cover object-center opacity-35 transition-all duration-700"
                         fallbackIconClass="w-16 h-16"
                       />
@@ -1340,6 +1368,8 @@ export default function App() {
                         <MediaImage
                           src={currentHero.backdrop || currentHero.poster}
                           alt={currentHero.title}
+                          widths={[780, 1280]}
+                          sizes="288px"
                           className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
                           fallbackIconClass="w-14 h-14"
                         />
@@ -1848,6 +1878,8 @@ export default function App() {
               <MediaImage
                 src={detailState.media.backdrop || detailState.media.poster}
                 alt={detailState.media.title}
+                widths={[780, 1280]}
+                sizes="100vw"
                 className="w-full h-full object-cover opacity-60"
                 fallbackIconClass="w-16 h-16"
               />
