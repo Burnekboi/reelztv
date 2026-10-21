@@ -26,6 +26,7 @@ import {
   fetchAdultVideos,
   ADULT_VIDEOS,
   normaliseAdultList,
+  isAdultTabVisible,
 } from './adult';
 
 // Cross-origin embed players (vidsrc / FrameXTV) run ad code we can't see or
@@ -476,6 +477,9 @@ export default function App() {
   };
   // Adult section — fully isolated: age-gated before the tab opens, never sent
   // to the search API, never in Home rails, never in My List / Watch History.
+  // The tab itself can be hidden from nav (see ADULT_SECTION_HIDDEN) while
+  // everything below stays built and ready.
+  const adultTabVisible = isAdultTabVisible();
   const [adultVerified, setAdultVerified] = useState(() => isAgeVerified());
   const [adultGateOpen, setAdultGateOpen] = useState(false);
   const [adultCatalog, setAdultCatalog] = useState({
@@ -837,6 +841,9 @@ export default function App() {
   };
 
   const changeTab = (nextTab) => {
+    // The Adult tab can be hidden from the nav while the section itself stays
+    // in the build — never switch into a tab that isn't reachable.
+    if (nextTab === 'adult' && !adultTabVisible) return;
     // Adult is behind an age gate: don't switch until it's confirmed.
     if (nextTab === 'adult' && !adultVerified) {
       setAdultGateOpen(true);
@@ -1230,7 +1237,7 @@ export default function App() {
 
       {/* MAIN TABS */}
       <nav className="bg-slate-950/90 border-b border-slate-800/80 px-4 py-2 flex items-center gap-2 z-20 overflow-x-auto no-scrollbar">
-        {MAIN_TABS.map((t) => (
+        {MAIN_TABS.filter((t) => t.id !== 'adult' || adultTabVisible).map((t) => (
           <button
             key={t.id}
             onClick={() => changeTab(t.id)}

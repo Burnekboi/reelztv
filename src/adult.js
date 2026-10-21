@@ -90,6 +90,23 @@ export const ADULT_VIDEOS = [
   },
 ];
 
+// --- Section visibility ------------------------------------------------------
+// Hides the Adult tab from the site navigation WITHOUT removing the section:
+// the catalog, player, age gate, search and load-more all stay in the build.
+// Flip this to `false` and the tab reappears, fully functional. The
+// localStorage override is a test hook so the browser suites can still
+// exercise the hidden section; no visitor ever sets it.
+export const ADULT_SECTION_HIDDEN = true;
+
+export function isAdultTabVisible() {
+  if (!ADULT_SECTION_HIDDEN) return true;
+  try {
+    return localStorage.getItem('reelz_adult_tab_v1') === '1';
+  } catch {
+    return false;
+  }
+}
+
 // --- Age gate ---------------------------------------------------------------
 // The confirmation is stored on the device so adults aren't re-asked on every
 // click. Change this to shorten/lengthen the window.
