@@ -19,6 +19,13 @@ import {
   tvmazeSeason,
   tvmazeRail,
 } from './tvmazeApi';
+import {
+  tmdbLibrary,
+  tmdbSearch,
+  tmdbDetails,
+  tmdbRail,
+  hasTmdbKey,
+} from './tmdbApi';
 
 // Internal hosts, extractor ids and embed event names live encoded in
 // ./codes.js so third-party names never appear as text in the built bundle.
@@ -93,10 +100,10 @@ function unwrapList(data) {
 
 // GET /api/home — hero pick + prebuilt discovery rails.
 //
-// If the mirrors are unreachable (they withhold CORS from our domain), the TV
-// rail is rebuilt keylessly from TVMaze so the Home page still has content
-// rather than an error panel. The movie rails cannot be rebuilt without a
-// TMDB key and are simply left empty.
+// If the mirrors are unreachable (they withhold CORS from our domain), the
+// rails are rebuilt from open sources: TV from TVMaze (keyless) and movies from
+// TMDB (free key). Anything still unavailable is left empty so the page renders
+// its normal rails rather than an error panel.
 export async function fetchHome() {
   try {
     const data = await getJson('/api/home');
@@ -107,11 +114,23 @@ export async function fetchHome() {
     }
     return { hero: normalizeMedia(data.hero), rails };
   } catch (err) {
-    const tv = await tvmazeRail('popular', 20).catch(() => []);
-    if (tv.length === 0) throw err;
+    const [tv, trending, popular, fresh] = await Promise.all([
+      tvmazeRail('popular', 20).catch(() => []),
+      hasTmdbKey() ? tmdbRail('trending', 20).catch(() => []) : [],
+      hasTmdbKey() ? tmdbRail('popular', 20).catch(() => []) : [],
+      hasTmdbKey() ? tmdbRail('new_releases', 20).catch(() => []) : [],
+    ]);
+    if (tv.length === 0 && trending.length === 0) throw err;
     return {
-      hero: tv[0] || null,
-      rails: { trending_movies: [], popular_movies: [], popular_tv: tv, popular_anime: [], new_releases: [], airing_anime: [] },
+      hero: trending[0] || tv[0] || null,
+      rails: {
+        trending_movies: trending,
+        popular_movies: popular,
+        popular_tv: tv,
+        popular_anime: [],
+        new_releases: fresh,
+        airing_anime: [],
+      },
     };
   }
 }
@@ -131,10 +150,10 @@ export async function fetchLibrary(library, { category = '', genre = '', year = 
   const isTv = library === 'tv';
   try {
     return unwrapList(await getJson(`/api/${library === 'tv' ? 'tv' : 'movies'}?${params.toString()}`));
-  } catch (err) {
-    // TV survives the mirror's CORS lockdown via TVMaze; movies need a TMDB key.
-    if (!isTv) throw err;
-    return tvmazeLibrary({ category, genre, year, minRating, page });
+  } catch {
+    // TV survives the mirror's CORS lockdown via TVMaze; movies via TMDB.
+    if (isTv) return tvmazeLibrary({ category, genre, year, minRating, page });
+    return tmdbLibrary({ category, genre, year, minRating, page });
   }
 }
 
@@ -159,9 +178,9 @@ export async function fetchAnimeDiscover({ category = 'popular', genre = '', sea
 
 // GET /api/search — global search (type: movie | tv | anime | all).
 //
-// When the mirrors are unreachable, TV results are rebuilt from TVMaze so
-// search still finds series. Movies require a TMDB key and produce no fallback
-// results; anime stays covered by the AniList path used by the Anime tab.
+// When the mirrors are unreachable, results are rebuilt from the open sources:
+// movies from TMDB (free key), TV from TVMaze (keyless). Anime stays covered by
+// the AniList path used by the Anime tab.
 export async function searchMedia(query, type = 'all', page = 1) {
   const q = String(query || '').trim();
   if (q.length < 2) return { items: [], page: 1, totalPages: 0, totalResults: 0 };
@@ -169,15 +188,24 @@ export async function searchMedia(query, type = 'all', page = 1) {
   try {
     return unwrapList(await getJson(`/api/search?${params.toString()}`));
   } catch (err) {
-    const tv = await tvmazeSearch(q, page).catch(() => null);
-    if (!tv || tv.items.length === 0) throw err;
-    return tv;
+    const [movies, tv] = await Promise.all([
+      hasTmdbKey() ? tmdbSearch(q, page).catch(() => null) : null,
+      tvmazeSearch(q, page).catch(() => null),
+    ]);
+    const items = [...(movies?.items || []), ...(tv?.items || [])];
+    if (items.length === 0) throw err;
+    return {
+      items,
+      page,
+      totalPages: Math.max(movies?.totalPages || 1, tv?.totalPages || 1),
+      totalResults: (movies?.totalResults || 0) + (tv?.totalResults || 0),
+    };
   }
 }
 
 // GET /api/details — rich detail for a movie or TV show (seasons, genres…).
 // `tvmazeId` (optional) routes TV details through the keyless TVMaze fallback
-// when the mirrors are unreachable.
+// when the mirrors are unreachable; movies fall back to TMDB.
 export async function fetchDetails(id, type, tvmazeId = null) {
   const params = new URLSearchParams({ id: String(id), type });
   try {
@@ -185,8 +213,11 @@ export async function fetchDetails(id, type, tvmazeId = null) {
     if (!data || !data.success) throw new Error(data?.error || 'Details request failed');
     return data;
   } catch (err) {
-    if (String(type).toLowerCase() !== 'tv' || !tvmazeId) throw err;
-    return tvmazeDetails(tvmazeId);
+    if (String(type).toLowerCase() === 'tv') {
+      if (!tvmazeId) throw err;
+      return tvmazeDetails(tvmazeId);
+    }
+    return tmdbDetails(id);
   }
 }
 

@@ -35,6 +35,12 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          # Movies are served by TMDB when the catalog mirror refuses our
+          # domain. Set this in Settings -> Secrets and variables -> Actions.
+          # A browser-side key is visible in the built JS by design — TMDB's
+          # API is not usable from a static site any other way.
+          VITE_TMDB_KEY: ${{ secrets.VITE_TMDB_KEY }}
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
