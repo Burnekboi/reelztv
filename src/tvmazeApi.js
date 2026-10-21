@@ -115,6 +115,9 @@ const GENRE_TO_ID = {
 
 function toCard(show, tmdbId) {
   const year = (show.premiered || '').slice(0, 4) || null;
+  // TVMaze's `original` images live on a path that 502s about a third of the
+  // time; `medium` is the reliable variant and is already larger than a card.
+  const poster = show.image?.medium || show.image?.original || null;
   return {
     id: tmdbId || String(show.id),
     tvmazeId: String(show.id),
@@ -123,8 +126,8 @@ function toCard(show, tmdbId) {
     type: 'tv',
     rating: show.rating?.average ?? null,
     year,
-    poster: show.image?.original || show.image?.medium || null,
-    backdrop: show.image?.original || null,
+    poster,
+    backdrop: poster,
     description: (show.summary || '').replace(/<[^>]*>/g, '').trim(),
     genres: Array.isArray(show.genres) ? show.genres : [],
     _weight: show.weight || 0,
@@ -249,7 +252,7 @@ export async function tvmazeSeason(tvmazeId, seasonNumber) {
       number: ep.number,
       name: ep.name || '',
       overview: (ep.summary || '').replace(/<[^>]*>/g, '').trim(),
-      still: ep.image?.original || ep.image?.medium || null,
+      still: ep.image?.medium || ep.image?.original || null,
       rating: ep.rating?.average ?? null,
       airDate: ep.airdate || null,
     })),
