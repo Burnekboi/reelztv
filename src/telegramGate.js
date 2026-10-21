@@ -7,7 +7,7 @@
 // a short enforced wait: it reliably sends real visitors to the channel without
 // adding a backend. Passing it is remembered on the device for 24 hours.
 // ---------------------------------------------------------------------------
-export const TELEGRAM_INVITE = 'https://t.me/ReelzTiVi';
+export const TELEGRAM_INVITE = 'https://t.me/reelztvchannel';
 
 // Remembered unlock (per device, 24h).
 const UNLOCK_KEY = 'reelz_telegram_unlock_v1';
