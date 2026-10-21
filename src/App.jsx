@@ -914,8 +914,8 @@ export default function App() {
   // ------------------------------------------------------------------
   // Detail modal (real seasons & episodes via FrameXTV / AniList)
   // ------------------------------------------------------------------
-  const loadSeason = (mediaId, seasonNumber, seasons, token) => {
-    fetchSeasonEpisodes(mediaId, seasonNumber)
+  const loadSeason = (mediaId, seasonNumber, seasons, token, tvmazeId = null) => {
+    fetchSeasonEpisodes(mediaId, seasonNumber, tvmazeId)
       .then((res) => {
         if (token !== detailToken.current) return;
         setDetailState((prev) =>
@@ -958,7 +958,7 @@ export default function App() {
     });
 
     if (media.type === 'tv') {
-      fetchDetails(media.id, 'tv')
+      fetchDetails(media.id, 'tv', media.tvmazeId)
         .then((d) => {
           if (token !== detailToken.current) return;
           const seasons = (d.seasons || [])
@@ -985,7 +985,7 @@ export default function App() {
                 }
               : prev
           );
-          loadSeason(media.id, chosen, seasons, token);
+          loadSeason(media.id, chosen, seasons, token, media.tvmazeId);
         })
         .catch(() => {
           if (token !== detailToken.current) return;

@@ -12,6 +12,13 @@
 // ---------------------------------------------------------------------------
 
 import { API_MIRRORS, EMBED_ORIGIN, VIDSRC_HOST } from './codes';
+import {
+  tvmazeLibrary,
+  tvmazeSearch,
+  tvmazeDetails,
+  tvmazeSeason,
+  tvmazeRail,
+} from './tvmazeApi';
 
 // Internal hosts, extractor ids and embed event names live encoded in
 // ./codes.js so third-party names never appear as text in the built bundle.
@@ -54,6 +61,8 @@ export function normalizeMedia(raw) {
   return {
     id,
     anilistId: raw.anilistId ? String(raw.anilistId) : type === 'anime' ? id : null,
+    tvmazeId: raw.tvmazeId ? String(raw.tvmazeId) : null,
+    tmdbId: raw.tmdbId ? String(raw.tmdbId) : null,
     title: raw.title || raw.name || 'Untitled',
     type,
     rating: raw.rating ?? raw.vote_average ?? null,
@@ -83,14 +92,28 @@ function unwrapList(data) {
 }
 
 // GET /api/home — hero pick + prebuilt discovery rails.
+//
+// If the mirrors are unreachable (they withhold CORS from our domain), the TV
+// rail is rebuilt keylessly from TVMaze so the Home page still has content
+// rather than an error panel. The movie rails cannot be rebuilt without a
+// TMDB key and are simply left empty.
 export async function fetchHome() {
-  const data = await getJson('/api/home');
-  if (!data || !data.success) throw new Error(data?.error || 'Home request failed');
-  const rails = {};
-  for (const [key, rail] of Object.entries(data.rails || {})) {
-    rails[key] = (rail?.results || []).map(normalizeMedia).filter(Boolean);
+  try {
+    const data = await getJson('/api/home');
+    if (!data || !data.success) throw new Error(data?.error || 'Home request failed');
+    const rails = {};
+    for (const [key, rail] of Object.entries(data.rails || {})) {
+      rails[key] = (rail?.results || []).map(normalizeMedia).filter(Boolean);
+    }
+    return { hero: normalizeMedia(data.hero), rails };
+  } catch (err) {
+    const tv = await tvmazeRail('popular', 20).catch(() => []);
+    if (tv.length === 0) throw err;
+    return {
+      hero: tv[0] || null,
+      rails: { trending_movies: [], popular_movies: [], popular_tv: tv, popular_anime: [], new_releases: [], airing_anime: [] },
+    };
   }
-  return { hero: normalizeMedia(data.hero), rails };
 }
 
 // GET /api/movies & /api/tv — the advanced browse endpoints (same ones
@@ -105,7 +128,14 @@ export async function fetchLibrary(library, { category = '', genre = '', year = 
   if (genre) params.set('genre', String(genre));
   if (year) params.set('year', String(year));
   if (minRating) params.set('min_rating', String(minRating));
-  return unwrapList(await getJson(`/api/${library === 'tv' ? 'tv' : 'movies'}?${params.toString()}`));
+  const isTv = library === 'tv';
+  try {
+    return unwrapList(await getJson(`/api/${library === 'tv' ? 'tv' : 'movies'}?${params.toString()}`));
+  } catch (err) {
+    // TV survives the mirror's CORS lockdown via TVMaze; movies need a TMDB key.
+    if (!isTv) throw err;
+    return tvmazeLibrary({ category, genre, year, minRating, page });
+  }
 }
 
 // GET /anime/api/discover — anime browsing. genre (by name) and seasonYear
@@ -128,39 +158,62 @@ export async function fetchAnimeDiscover({ category = 'popular', genre = '', sea
 }
 
 // GET /api/search — global search (type: movie | tv | anime | all).
+//
+// When the mirrors are unreachable, TV results are rebuilt from TVMaze so
+// search still finds series. Movies require a TMDB key and produce no fallback
+// results; anime stays covered by the AniList path used by the Anime tab.
 export async function searchMedia(query, type = 'all', page = 1) {
   const q = String(query || '').trim();
   if (q.length < 2) return { items: [], page: 1, totalPages: 0, totalResults: 0 };
   const params = new URLSearchParams({ q, type, page: String(page) });
-  return unwrapList(await getJson(`/api/search?${params.toString()}`));
+  try {
+    return unwrapList(await getJson(`/api/search?${params.toString()}`));
+  } catch (err) {
+    const tv = await tvmazeSearch(q, page).catch(() => null);
+    if (!tv || tv.items.length === 0) throw err;
+    return tv;
+  }
 }
 
 // GET /api/details — rich detail for a movie or TV show (seasons, genres…).
-export async function fetchDetails(id, type) {
+// `tvmazeId` (optional) routes TV details through the keyless TVMaze fallback
+// when the mirrors are unreachable.
+export async function fetchDetails(id, type, tvmazeId = null) {
   const params = new URLSearchParams({ id: String(id), type });
-  const data = await getJson(`/api/details?${params.toString()}`);
-  if (!data || !data.success) throw new Error(data?.error || 'Details request failed');
-  return data;
+  try {
+    const data = await getJson(`/api/details?${params.toString()}`);
+    if (!data || !data.success) throw new Error(data?.error || 'Details request failed');
+    return data;
+  } catch (err) {
+    if (String(type).toLowerCase() !== 'tv' || !tvmazeId) throw err;
+    return tvmazeDetails(tvmazeId);
+  }
 }
 
 // GET /api/season — real episode list (names, overviews, stills) for a season.
-export async function fetchSeasonEpisodes(id, season) {
+// `tvmazeId` (optional) routes TV episodes through TVMaze when mirrors fail.
+export async function fetchSeasonEpisodes(id, season, tvmazeId = null) {
   const params = new URLSearchParams({ id: String(id), season: String(season) });
-  const data = await getJson(`/api/season?${params.toString()}`);
-  if (!data || !data.success) throw new Error(data?.error || 'Season request failed');
-  const episodes = (data.episodes || []).map((ep) => ({
-    number: ep.number ?? ep.episode_number,
-    name: ep.name || '',
-    overview: ep.overview || '',
-    still: ep.still || ep.still_path || null,
-    rating: ep.vote_average ?? null,
-    airDate: ep.air_date || null,
-  }));
-  return {
-    name: data.name || `Season ${season}`,
-    episodeCount: data.episode_count || episodes.length,
-    episodes,
-  };
+  try {
+    const data = await getJson(`/api/season?${params.toString()}`);
+    if (!data || !data.success) throw new Error(data?.error || 'Season request failed');
+    const episodes = (data.episodes || []).map((ep) => ({
+      number: ep.number ?? ep.episode_number,
+      name: ep.name || '',
+      overview: ep.overview || '',
+      still: ep.still || ep.still_path || null,
+      rating: ep.vote_average ?? null,
+      airDate: ep.air_date || null,
+    }));
+    return {
+      name: data.name || `Season ${season}`,
+      episodeCount: data.episode_count || episodes.length,
+      episodes,
+    };
+  } catch (err) {
+    if (!tvmazeId) throw err;
+    return tvmazeSeason(tvmazeId, season);
+  }
 }
 
 // GET /api/providers — FrameXTV's extraction servers ("the servers with the
