@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Local build environment (holds VITE_TMDB_KEY). Never commit the key —
+# production reads it from the GitHub Actions secret instead.
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
